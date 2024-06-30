@@ -6,7 +6,7 @@ plugins {
 }
 
 group = 'net.neoforged'
-version = gradleutils.version
+println("Version: ${version = gradleutils.version}")
 
 base {
     archivesName = 'server'
@@ -19,6 +19,7 @@ java {
 }
 
 jar {
+    archiveFile = project.file('server.jar')
     manifest.attributes([
             'Main-Class'          : 'net.neoforged.serverstarterjar.Main',
             'Premain-Class'       : 'net.neoforged.serverstarterjar.Agent',
