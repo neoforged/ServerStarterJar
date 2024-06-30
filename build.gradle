@@ -39,7 +39,7 @@ publishMods {
     getChangelog().set(lastCommitMessage.toString().trim())
     type = STABLE
     github {
-        accessToken = providers.gradleProperty('GITHUB_TOKEN')
+        accessToken = providers.environmentVariable('GITHUB_TOKEN')
         repository = 'neoforged/ServerStarterJar'
         commitish = 'main'
     }
