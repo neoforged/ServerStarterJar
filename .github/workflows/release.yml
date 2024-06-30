@@ -16,6 +16,7 @@ jobs:
     uses: neoforged/actions/.github/workflows/gradle-publish.yml@main
     permissions:
       contents: write
+      statuses: write
     with:
       java: 17
       pre_gradle_tasks: build
