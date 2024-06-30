@@ -13,18 +13,29 @@ permissions:
 
 jobs:
   release:
-    uses: neoforged/actions/.github/workflows/gradle-publish.yml@main
-    permissions:
-      contents: write
-      statuses: write
-    with:
-      java: 17
-      pre_gradle_tasks: build
-      gradle_tasks: publishMods -Pghtoken=${{ github.token }}
-    secrets:
-      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-      MAVEN_USER: ${{ secrets.MAVEN_USER }}
-      MAVEN_PASSWORD: ${{ secrets.MAVEN_PASSWORD }}
-      GPG_SUBKEY: ${{ secrets.GPG_SUBKEY }}
-      GPG_SUBKEY_ID: ${{ secrets.GPG_SUBKEY_ID }}
-      GPG_SUBKEY_PASSWORD: ${{ secrets.GPG_SUBKEY_PASSWORD }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1000
+          fetch-tags: true
+
+      - name: Validate wrapper
+        uses: gradle/actions/wrapper-validation@v3
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v2
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          cache-read-only: false
+
+      - name: Setup with Gradle
+        run: ./gradlew build publishMods
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
