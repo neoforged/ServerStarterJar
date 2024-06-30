@@ -1,12 +1,23 @@
 plugins {
     id 'java'
     id 'maven-publish'
-    id 'net.neoforged.gradleutils' version '3.0.0'
     id 'me.modmuss50.mod-publish-plugin' version '0.5.1'
 }
 
 group = 'net.neoforged'
-println("Version: ${version = gradleutils.version}")
+
+var describe = new ByteArrayOutputStream()
+project.exec {
+    commandLine('git', 'describe')
+    standardOutput = describe
+}
+final splitVersion = describe.toString().trim().split('-')
+if (splitVersion[0].split('\\.').length == 2) {
+    println("Version: ${version = (splitVersion[0] + '.' + splitVersion[1])}")
+} else {
+    var splitVer = splitVersion[0].split('\\.')
+    println("Version: ${version = (splitVer[0] + '.' + splitVer[1] + (splitVer[2] as int + splitVersion[1] as int))}")
+}
 
 base {
     archivesName = 'server'
@@ -19,7 +30,7 @@ java {
 }
 
 jar {
-    archiveFile = project.file('server.jar')
+    archiveFileName = 'server.jar'
     manifest.attributes([
             'Main-Class'          : 'net.neoforged.serverstarterjar.Main',
             'Premain-Class'       : 'net.neoforged.serverstarterjar.Agent',
