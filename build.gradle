@@ -39,8 +39,8 @@ publishMods {
     getChangelog().set(lastCommitMessage.toString().trim())
     type = STABLE
     github {
-        accessToken = providers.environmentVariable('MAVEN_USER')
-        repository = 'neoforged/serverstarterjar'
+        accessToken = providers.environmentVariable('MAVEN_PASSWORD')
+        repository = 'neoforged/ServerStarterJar'
         commitish = 'main'
     }
 }

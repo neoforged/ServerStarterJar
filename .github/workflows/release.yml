@@ -14,14 +14,16 @@ permissions:
 jobs:
   release:
     uses: neoforged/actions/.github/workflows/gradle-publish.yml@main
+    permissions:
+      contents: write
     with:
       java: 17
       pre_gradle_tasks: build
       gradle_tasks: publishMods
     secrets:
       DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-      MAVEN_USER: ${{ secrets.GITHUB_TOKEN }}
-      MAVEN_PASSWORD: ${{ secrets.MAVEN_PASSWORD }}
+      MAVEN_USER: ${{ secrets.MAVEN_USER }}
+      MAVEN_PASSWORD: ${{ github.token }}
       GPG_SUBKEY: ${{ secrets.GPG_SUBKEY }}
       GPG_SUBKEY_ID: ${{ secrets.GPG_SUBKEY_ID }}
       GPG_SUBKEY_PASSWORD: ${{ secrets.GPG_SUBKEY_PASSWORD }}
