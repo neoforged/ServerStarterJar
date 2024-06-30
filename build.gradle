@@ -1,8 +1,16 @@
 plugins {
     id 'java'
+    id 'maven-publish'
+    id 'net.neoforged.gradleutils' version '3.0.0'
+    id 'me.modmuss50.mod-publish-plugin' version '0.5.1'
 }
 
 group = 'net.neoforged'
+version = gradleutils.version
+
+base {
+    archivesName = 'server'
+}
 
 java {
     toolchain {
@@ -16,6 +24,22 @@ jar {
             'Premain-Class'       : 'net.neoforged.serverstarterjar.Agent',
             'Launcher-Agent-Class': 'net.neoforged.serverstarterjar.Agent',
             'Add-Exports'         : 'java.base/jdk.internal.loader',
-            'Add-Opens'           : 'java.base/java.lang'
+            'Add-Opens'           : 'java.base/java.lang',
     ])
 }
+
+var lastCommitMessage = new ByteArrayOutputStream()
+project.exec {
+    commandLine('git log -1 --pretty=%B'.split(' '))
+    standardOutput = lastCommitMessage
+}
+publishMods {
+    getChangelog().set(lastCommitMessage.toString().trim())
+    github {
+        accessToken = providers.environmentVariable('MAVEN_USER')
+        repository = 'neoforged/serverstarterjar'
+        commitish = 'main'
+    }
+}
+
+test.enabled = false
