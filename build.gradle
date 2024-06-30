@@ -34,7 +34,7 @@ project.exec {
     standardOutput = lastCommitMessage
 }
 publishMods {
-    file = tasks.jar
+    file = tasks.jar.archiveFile
     modLoaders.addAll('forge', 'neoforge')
     getChangelog().set(lastCommitMessage.toString().trim())
     github {
