@@ -1,0 +1,19 @@
+plugins {
+    id 'java'
+}
+
+group = 'net.neoforged'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+jar {
+    manifest.attributes([
+           'Main-Class':  'net.neoforged.serverstarterjar.Main',
+           'Premain-Class': 'net.neoforged.serverstarterjar.Agent',
+           'Launcher-Agent-Class': 'net.neoforged.serverstarterjar.Agent'
+    ])
+}
