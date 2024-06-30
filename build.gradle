@@ -37,6 +37,7 @@ publishMods {
     file = tasks.jar.archiveFile
     modLoaders.addAll('forge', 'neoforge')
     getChangelog().set(lastCommitMessage.toString().trim())
+    type = STABLE
     github {
         accessToken = providers.environmentVariable('MAVEN_USER')
         repository = 'neoforged/serverstarterjar'
