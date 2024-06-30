@@ -20,11 +20,11 @@ jobs:
     with:
       java: 17
       pre_gradle_tasks: build
-      gradle_tasks: publishMods
+      gradle_tasks: publishMods -Pghtoken=${{ github.token }}
     secrets:
       DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
       MAVEN_USER: ${{ secrets.MAVEN_USER }}
-      MAVEN_PASSWORD: ${{ github.token }}
+      MAVEN_PASSWORD: ${{ secrets.MAVEN_PASSWORD }}
       GPG_SUBKEY: ${{ secrets.GPG_SUBKEY }}
       GPG_SUBKEY_ID: ${{ secrets.GPG_SUBKEY_ID }}
       GPG_SUBKEY_PASSWORD: ${{ secrets.GPG_SUBKEY_PASSWORD }}
