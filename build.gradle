@@ -1,3 +1,6 @@
+import java.nio.file.Files
+import java.nio.file.Paths
+
 plugins {
     id 'java'
     id 'maven-publish'
@@ -23,9 +26,17 @@ base {
     archivesName = 'server'
 }
 
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    compileOnly 'org.jetbrains:annotations:24.1.0'
+}
+
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(17)
+        languageVersion = JavaLanguageVersion.of(21)
     }
 }
 
@@ -38,6 +49,15 @@ jar {
             'Add-Exports'         : 'java.base/jdk.internal.loader',
             'Add-Opens'           : 'java.base/java.lang',
     ])
+}
+
+tasks.register('updateServerJar') {
+    dependsOn(tasks.jar)
+    doFirst {
+        var targetPath = rootProject.file('testing/server.jar').toPath()
+        Files.deleteIfExists(targetPath)
+        Files.copy(tasks.jar.archiveFile.get().asFile.toPath(), targetPath)
+    }
 }
 
 var lastCommitMessage = new ByteArrayOutputStream()

@@ -1,5 +1,7 @@
 package net.neoforged.serverstarterjar;
 
+import org.jetbrains.annotations.Nullable;
+
 import java.io.File;
 import java.io.IOException;
 import java.lang.invoke.MethodHandle;
@@ -7,6 +9,8 @@ import java.lang.invoke.MethodHandles;
 import java.lang.module.ModuleFinder;
 import java.lang.module.ModuleReference;
 import java.lang.reflect.Method;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -15,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.jar.JarFile;
 import java.util.stream.Collectors;
 
 public class Main {
@@ -24,20 +29,34 @@ public class Main {
     public static final char SINGLE_QUOTES = '\'';
     public static final OperatingSystem OS = detectOs();
     public static final MethodHandle LOAD_MODULE;
-    public static final MethodHandle BOOT_LAYER;
+    public static final MethodHandle SET_BOOT_LAYER;
 
     static {
         var lookup = MethodHandles.lookup();
         try {
             LOAD_MODULE = lookup.unreflect(lookup.findClass("jdk.internal.loader.BuiltinClassLoader").getDeclaredMethod("loadModule", ModuleReference.class));
-            BOOT_LAYER = MethodHandles.privateLookupIn(System.class, lookup).unreflectSetter(System.class.getDeclaredField("bootLayer"));
+            SET_BOOT_LAYER = MethodHandles.privateLookupIn(System.class, lookup).unreflectSetter(System.class.getDeclaredField("bootLayer"));
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
     }
 
     public static void main(String[] $) throws Throwable {
-        final var argsFile = getArgsFile();
+        // Attempt to locate the run.bat/run.sh file
+        final var runPath = Path.of(OS.runFile);
+        if (Files.notExists(runPath)) {
+            // If it doesn't exist, attempt to find a file whose name ends in "installer.jar" and run it as an installer
+            System.err.println("Failed to find run file at " + runPath + ", attempting to run installer");
+            if (!runInstaller()) {
+                System.exit(1);
+            }
+        }
+
+        final var argsFile = getArgsFile(runPath);
+        if (argsFile == null) {
+            System.exit(1);
+        }
+
         final var args = Files.readAllLines(argsFile).stream()
                 .flatMap(arg -> toArgs(arg).stream()).collect(Collectors.toCollection(ArrayList::new));
 
@@ -71,7 +90,7 @@ public class Main {
                         Map.of()
                 ));
 
-        BOOT_LAYER.invokeExact(bootPath.layer());
+        SET_BOOT_LAYER.invokeExact(bootPath.layer());
 
         var sysProps = args.stream().filter(arg -> arg.startsWith("-D")).toList();
         sysProps.forEach(args::remove);
@@ -94,6 +113,39 @@ public class Main {
         main.invoke(null, new Object[] { args.toArray(String[]::new) });
     }
 
+    @SuppressWarnings("removal")
+    private static boolean runInstaller() throws Throwable {
+        try (final var stream = Files.find(Path.of("."), 1, (path, basicFileAttributes) -> path.getFileName().toString().endsWith("installer.jar"))) {
+            var inst = stream.findFirst();
+            if (inst.isPresent()) {
+                var installer = inst.get();
+                System.err.println("Found installer " + installer.toAbsolutePath());
+
+                var installerJar = new JarFile(installer.toFile());
+                var manifest = installerJar.getManifest();
+                installerJar.close();
+                var mainName = manifest.getMainAttributes().getValue("Main-Class");
+                if (mainName == null) {
+                    System.err.println("Installer file doesn't specify Main-Class");
+                    return false;
+                }
+
+                var classLoader = new URLClassLoader(new URL[]{ installer.toUri().toURL() });
+
+                var mainClass = classLoader.loadClass(mainName);
+                System.err.println("Running installer...");
+
+                mainClass.getDeclaredMethod("main", String[].class).invoke(null, (Object) new String[] { "--installServer" });
+
+                System.err.println("Installer finished");
+                classLoader.close();
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static List<String> findValues(List<String> args, String argument) {
         var lst = new ArrayList<String>();
         String val;
@@ -101,6 +153,7 @@ public class Main {
         return lst;
     }
 
+    @Nullable
     private static String findValue(List<String> args, String argument) {
         int idx = args.indexOf(argument);
         if (idx >= 0) {
@@ -133,20 +186,22 @@ public class Main {
                 .toArray(Path[]::new);
     }
 
-    private static Path getArgsFile() {
-        var command = toArgs(getCommand());
+    @Nullable
+    private static Path getArgsFile(Path runPath) {
+        var cmd = getCommand(runPath);
+        if (cmd == null) return null;
+        var command = toArgs(cmd);
         for (String part : command) {
             if (part.startsWith("@") && part.endsWith("/" + OS.argsFile)) {
                 return Path.of(part.substring(1));
             }
         }
         System.err.println("Failed to find argument file in command " + command);
-        System.exit(0);
-        throw null;
+        return null;
     }
 
-    private static String getCommand() {
-        final var path = Path.of(OS.runFile);
+    @Nullable
+    private static String getCommand(Path path) {
         try {
             final var contents = Files.readAllLines(path);
             for (String content : contents) {
@@ -154,13 +209,11 @@ public class Main {
                 return content;
             }
             System.err.println("Failed to find start command in file " + path);
-            System.exit(0);
+            return null;
         } catch (IOException e) {
             System.err.println("Failed to read contents of " + OS.runFile + " file at " + path);
-            System.exit(0);
+            return null;
         }
-
-        throw null;
     }
 
     public static List<String> toArgs(String str) {
