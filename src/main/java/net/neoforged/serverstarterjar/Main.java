@@ -32,6 +32,10 @@ public class Main {
     public static final MethodHandle SET_BOOT_LAYER;
 
     static {
+        // Open the needed packages below to ourselves
+        open(ModuleLayer.boot().findModule("java.base").orElseThrow(), "java.lang", Main.class.getModule());
+        export(ModuleLayer.boot().findModule("java.base").orElseThrow(), "jdk.internal.loader", Main.class.getModule());
+
         var lookup = MethodHandles.lookup();
         try {
             LOAD_MODULE = lookup.unreflect(lookup.findClass("jdk.internal.loader.BuiltinClassLoader").getDeclaredMethod("loadModule", ModuleReference.class));
@@ -41,7 +45,7 @@ public class Main {
         }
     }
 
-    public static void main(String[] $) throws Throwable {
+    public static void main(String[] starterArgs) throws Throwable {
         // Attempt to locate the run.bat/run.sh file
         final var runPath = Path.of(OS.runFile);
         if (Files.notExists(runPath)) {
@@ -71,23 +75,17 @@ public class Main {
 
         findValues(args, "--add-opens").stream()
                 .map(arg -> arg.split("="))
-                .forEach(toOpen -> Agent.instrumentation.redefineModule(
+                .forEach(toOpen -> open(
                         bootPath.layer().findModule(toOpen[0].split("/")[0]).orElseThrow(),
-                        Set.of(),
-                        Map.of(),
-                        Map.of(toOpen[0].split("/")[1], Set.of(bootPath.layer().findModule(toOpen[1]).orElseThrow())),
-                        Set.of(),
-                        Map.of()
+                        toOpen[0].split("/")[1],
+                        bootPath.layer().findModule(toOpen[1]).orElseThrow()
                 ));
         findValues(args, "--add-exports").stream()
                 .map(arg -> arg.split("="))
-                .forEach(toExport -> Agent.instrumentation.redefineModule(
+                .forEach(toExport -> export(
                         bootPath.layer().findModule(toExport[0].split("/")[0]).orElseThrow(),
-                        Set.of(),
-                        Map.of(toExport[0].split("/")[1], Set.of(bootPath.layer().findModule(toExport[1]).orElseThrow())),
-                        Map.of(),
-                        Set.of(),
-                        Map.of()
+                        toExport[0].split("/")[1],
+                        (bootPath.layer().findModule(toExport[1]).orElseThrow())
                 ));
 
         SET_BOOT_LAYER.invokeExact(bootPath.layer());
@@ -110,10 +108,39 @@ public class Main {
             throw new Exception("Failed to find main class \"" + mainName + "\"", e);
         }
 
+        // Pass any args specified to the start jar to MC
+        args.addAll(Arrays.asList(starterArgs));
+
+        // If the main class isn't exported, export it so that we can access it
+        if (!main.getDeclaringClass().getModule().isExported(main.getDeclaringClass().getPackageName())) {
+            export(main.getDeclaringClass().getModule(), main.getDeclaringClass().getPackageName(), Main.class.getModule());
+        }
+
         main.invoke(null, new Object[] { args.toArray(String[]::new) });
     }
 
-    @SuppressWarnings("removal")
+    private static void export(Module module, String pkg, Module to) {
+        Agent.instrumentation.redefineModule(
+                module,
+                Set.of(),
+                Map.of(pkg, Set.of(to)),
+                Map.of(),
+                Set.of(),
+                Map.of()
+        );
+    }
+
+    private static void open(Module module, String pkg, Module to) {
+        Agent.instrumentation.redefineModule(
+                module,
+                Set.of(),
+                Map.of(),
+                Map.of(pkg, Set.of(to)),
+                Set.of(),
+                Map.of()
+        );
+    }
+
     private static boolean runInstaller() throws Throwable {
         try (final var stream = Files.find(Path.of("."), 1, (path, basicFileAttributes) -> path.getFileName().toString().endsWith("installer.jar"))) {
             var inst = stream.findFirst();
