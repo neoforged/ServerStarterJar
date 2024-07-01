@@ -42,9 +42,10 @@ java {
 jar {
     archiveFileName = 'server.jar'
     manifest.attributes([
-            'Main-Class'          : 'net.neoforged.serverstarterjar.Main',
-            'Premain-Class'       : 'net.neoforged.serverstarterjar.Agent',
-            'Launcher-Agent-Class': 'net.neoforged.serverstarterjar.Agent'
+            'Implementation-Version': project.version.toString(),
+            'Main-Class'            : 'net.neoforged.serverstarterjar.Main',
+            'Premain-Class'         : 'net.neoforged.serverstarterjar.Agent',
+            'Launcher-Agent-Class'  : 'net.neoforged.serverstarterjar.Agent'
     ])
 }
 
