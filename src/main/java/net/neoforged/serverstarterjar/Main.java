@@ -6,13 +6,17 @@ import java.io.File;
 import java.io.IOException;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.lang.module.ModuleFinder;
 import java.lang.module.ModuleReference;
 import java.lang.reflect.Method;
+import java.net.URI;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.spi.FileSystemProvider;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -29,29 +33,50 @@ public class Main {
     public static final char SINGLE_QUOTES = '\'';
     public static final OperatingSystem OS = detectOs();
     public static final MethodHandle LOAD_MODULE;
-    public static final MethodHandle SET_BOOT_LAYER;
+    public static final MethodHandle SET_bootLayer;
+    public static final MethodHandle SET_installedProviders;
+    public static final MethodHandle loadInstalledProviders;
 
     static {
         // Open the needed packages below to ourselves
         open(ModuleLayer.boot().findModule("java.base").orElseThrow(), "java.lang", Main.class.getModule());
         export(ModuleLayer.boot().findModule("java.base").orElseThrow(), "jdk.internal.loader", Main.class.getModule());
+        open(ModuleLayer.boot().findModule("java.base").orElseThrow(), "java.nio.file.spi", Main.class.getModule());
 
         var lookup = MethodHandles.lookup();
         try {
             LOAD_MODULE = lookup.unreflect(lookup.findClass("jdk.internal.loader.BuiltinClassLoader").getDeclaredMethod("loadModule", ModuleReference.class));
-            SET_BOOT_LAYER = MethodHandles.privateLookupIn(System.class, lookup).unreflectSetter(System.class.getDeclaredField("bootLayer"));
+            SET_bootLayer = MethodHandles.privateLookupIn(System.class, lookup).unreflectSetter(System.class.getDeclaredField("bootLayer"));
+
+            SET_installedProviders = MethodHandles.privateLookupIn(FileSystemProvider.class, lookup).findStaticSetter(FileSystemProvider.class, "installedProviders", List.class);
+            loadInstalledProviders = MethodHandles.privateLookupIn(FileSystemProvider.class, lookup).findStatic(FileSystemProvider.class, "loadInstalledProviders", MethodType.methodType(List.class));
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
     }
 
     public static void main(String[] starterArgs) throws Throwable {
+        var startArgs = new ArrayList<>(Arrays.asList(starterArgs));
+
+        URL installerUrl = null;
+        if (startArgs.contains("--installer")) {
+            var installer = startArgs.get(startArgs.indexOf("--installer") + 1);
+            startArgs.remove("--installer");
+            startArgs.remove(installer);
+
+            if (installer.startsWith("https://")) {
+                installerUrl = URI.create(installer).toURL();
+            } else {
+                installerUrl = URI.create("https://maven.neoforged.net/releases/net/neoforged/neoforge/" + installer + "/neoforge-" + installer + "-installer.jar").toURL();
+            }
+        }
+
         // Attempt to locate the run.bat/run.sh file
         final var runPath = Path.of(OS.runFile);
         if (Files.notExists(runPath)) {
             // If it doesn't exist, attempt to find a file whose name ends in "installer.jar" and run it as an installer
             System.err.println("Failed to find run file at " + runPath + ", attempting to run installer");
-            if (!runInstaller()) {
+            if (!runInstaller(installerUrl)) {
                 System.exit(1);
             }
         }
@@ -88,7 +113,17 @@ public class Main {
                         (bootPath.layer().findModule(toExport[1]).orElseThrow())
                 ));
 
-        SET_BOOT_LAYER.invokeExact(bootPath.layer());
+        SET_bootLayer.invokeExact(bootPath.layer());
+
+        // Clear installed providers so the JiJ provider can be found
+        {
+            @SuppressWarnings("unchecked")
+            final List<FileSystemProvider> newProviders = (List<FileSystemProvider>) loadInstalledProviders.invokeExact();
+            // Insert default provider at the start of the list
+            newProviders.add(0, FileSystems.getDefault().provider());
+            // Update the installed providers
+            SET_installedProviders.invokeExact(newProviders);
+        }
 
         var sysProps = args.stream().filter(arg -> arg.startsWith("-D")).toList();
         sysProps.forEach(args::remove);
@@ -109,7 +144,7 @@ public class Main {
         }
 
         // Pass any args specified to the start jar to MC
-        args.addAll(Arrays.asList(starterArgs));
+        args.addAll(startArgs);
 
         // If the main class isn't exported, export it so that we can access it
         if (!main.getDeclaringClass().getModule().isExported(main.getDeclaringClass().getPackageName())) {
@@ -141,33 +176,47 @@ public class Main {
         );
     }
 
-    private static boolean runInstaller() throws Throwable {
-        try (final var stream = Files.find(Path.of("."), 1, (path, basicFileAttributes) -> path.getFileName().toString().endsWith("installer.jar"))) {
-            var inst = stream.findFirst();
-            if (inst.isPresent()) {
-                var installer = inst.get();
-                System.err.println("Found installer " + installer.toAbsolutePath());
+    private static boolean runInstaller(@Nullable URL installerUrl) throws Throwable {
+        Path installer = null;
 
-                var installerJar = new JarFile(installer.toFile());
-                var manifest = installerJar.getManifest();
-                installerJar.close();
-                var mainName = manifest.getMainAttributes().getValue("Main-Class");
-                if (mainName == null) {
-                    System.err.println("Installer file doesn't specify Main-Class");
-                    return false;
-                }
-
-                var classLoader = new URLClassLoader(new URL[]{ installer.toUri().toURL() });
-
-                var mainClass = classLoader.loadClass(mainName);
-                System.err.println("Running installer...");
-
-                mainClass.getDeclaredMethod("main", String[].class).invoke(null, (Object) new String[] { "--installServer" });
-
-                System.err.println("Installer finished");
-                classLoader.close();
-                return true;
+        if (installerUrl != null) {
+            var onSlash = installerUrl.getPath().split("/");
+            installer = Path.of(onSlash[onSlash.length - 1]);
+            System.err.println("Downloading installer from " + installerUrl + " to " + installer.toAbsolutePath());
+            try (var stream = installerUrl.openStream()) {
+                Files.copy(stream, installer);
             }
+        } else {
+            try (final var stream = Files.find(Path.of("."), 1, (path, basicFileAttributes) -> path.getFileName().toString().endsWith("installer.jar"))) {
+                var inst = stream.findFirst();
+                if (inst.isPresent()) {
+                    installer = inst.get();
+                }
+            }
+        }
+
+        if (installer != null) {
+            System.err.println("Found installer " + installer.toAbsolutePath());
+
+            var installerJar = new JarFile(installer.toFile());
+            var manifest = installerJar.getManifest();
+            installerJar.close();
+            var mainName = manifest.getMainAttributes().getValue("Main-Class");
+            if (mainName == null) {
+                System.err.println("Installer file doesn't specify Main-Class");
+                return false;
+            }
+
+            var classLoader = new URLClassLoader(new URL[]{ installer.toUri().toURL() });
+
+            var mainClass = classLoader.loadClass(mainName);
+            System.err.println("Running installer...");
+
+            mainClass.getDeclaredMethod("main", String[].class).invoke(null, (Object) new String[] { "--installServer" });
+
+            System.err.println("Installer finished");
+            classLoader.close();
+            return true;
         }
 
         return false;

@@ -14,6 +14,14 @@ Afterwards, you may run the jar as an executable (i.e. `java -jar server.jar`).
 ## Compatible Versions
 This starter is compatible with all [MinecraftForge](https://minecraftforge.net) versions since 1.17 and up to 1.20.1, and with all [NeoForge](https://neoforged.net) versions.
 
+## Running the installer
+If the starter cannot find the run scripts, it will attempt to run an installer.  
+It will first try to run the first file ending with `-installer.jar` from the folder.  
+
+You may specify an installer to download instead using the `--installer` option (i.e. `java -jar server.jar --installer 21.0.46-beta`).  
+The installer specified can either be a link to an installer (i.e. `https://maven.neoforged.net/releases/net/neoforged/neoforge/21.0.46-beta/neoforge-21.0.46-beta-installer.jar`)
+or a **NeoForge version** to download the installer for (i.e. `21.0.46-beta`).
+
 ## How it works
 Below you will find the steps the start goes through to launch a modular NeoForge environment:
 1. search the folder the starter was invoked in for the `run.sh` (*nix) / `run.bat` (Windows) file
