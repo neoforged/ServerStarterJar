@@ -5,7 +5,7 @@ This project brings back the `server.jar` file in old versions, that can be used
 
 ## Installation
 To use the starter, simply download the `server.jar` file of [the latest release](https://github.com/NeoForged/serverstarterjar/releases/latest/download/server.jar)
-and place it in the folder the `run.sh`/`run.bat` scripts are located (you need to run the NeoForge installer first with the `--install-server` argument).  
+and place it in the folder the `run.sh`/`run.bat` scripts are located (you may need to run the NeoForge installer first with the `--install-server` argument; check the [installer section](#running-the-installer) for more information).  
 Afterwards, you may run the jar as an executable (i.e. `java -jar server.jar`).
 
 > [!IMPORTANT]  
