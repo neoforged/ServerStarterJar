@@ -128,8 +128,7 @@ public class Main {
             System.exit(1);
         }
 
-        // If we're able to find a jar in the invocation, load that jar on the boot CP as an automatic module, and invoke it
-        // Note: the correct way of loading it would have been as an unnamed module, but I have no idea how to do that
+        // If we're able to find a jar in the invocation, load that jar on the boot CP, and invoke it
         var jar = findValue(args, "-jar");
         if (jar != null) {
             var jarFile = new File(jar);
