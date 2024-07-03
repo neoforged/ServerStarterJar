@@ -22,7 +22,9 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.StringTokenizer;
 import java.util.function.Predicate;
+import java.util.jar.Attributes;
 import java.util.jar.JarFile;
 import java.util.stream.Collectors;
 
@@ -32,7 +34,8 @@ public class Main {
     public static final char QUOTES = '"';
     public static final char SINGLE_QUOTES = '\'';
     public static final OperatingSystem OS = detectOs();
-    public static final MethodHandle LOAD_MODULE;
+    public static final MethodHandle loadModule;
+    public static final MethodHandle appendClassPath;
     public static final MethodHandle SET_bootLayer;
     public static final MethodHandle SET_installedProviders;
     public static final MethodHandle loadInstalledProviders;
@@ -40,12 +43,15 @@ public class Main {
     static {
         // Open the needed packages below to ourselves
         open(ModuleLayer.boot().findModule("java.base").orElseThrow(), "java.lang", Main.class.getModule());
+        open(ModuleLayer.boot().findModule("java.base").orElseThrow(), "jdk.internal.loader", Main.class.getModule());
         export(ModuleLayer.boot().findModule("java.base").orElseThrow(), "jdk.internal.loader", Main.class.getModule());
         open(ModuleLayer.boot().findModule("java.base").orElseThrow(), "java.nio.file.spi", Main.class.getModule());
 
         var lookup = MethodHandles.lookup();
         try {
-            LOAD_MODULE = lookup.unreflect(lookup.findClass("jdk.internal.loader.BuiltinClassLoader").getDeclaredMethod("loadModule", ModuleReference.class));
+            var builtinCL = lookup.findClass("jdk.internal.loader.BuiltinClassLoader");
+            loadModule = lookup.findVirtual(builtinCL, "loadModule", MethodType.methodType(void.class, ModuleReference.class));
+            appendClassPath = MethodHandles.privateLookupIn(builtinCL, MethodHandles.lookup()).findVirtual(builtinCL, "appendClassPath", MethodType.methodType(void.class, String.class));
             SET_bootLayer = MethodHandles.privateLookupIn(System.class, lookup).unreflectSetter(System.class.getDeclaredField("bootLayer"));
 
             SET_installedProviders = MethodHandles.privateLookupIn(FileSystemProvider.class, lookup).findStaticSetter(FileSystemProvider.class, "installedProviders", List.class);
@@ -81,39 +87,68 @@ public class Main {
             }
         }
 
-        final var argsFile = getArgsFile(runPath);
-        if (argsFile == null) {
+        final var args = getStartupArguments(runPath);
+        if (args == null) {
+            System.err.println("Failed to find startup arguments using run script path " + runPath);
             System.exit(1);
         }
 
-        final var args = Files.readAllLines(argsFile).stream()
-                .flatMap(arg -> toArgs(arg).stream()).collect(Collectors.toCollection(ArrayList::new));
+        // If we're able to find a jar in the invocation, load that jar on the boot CP as an automatic module, and invoke it
+        // Note: the correct way of loading it would have been as an unnamed module, but I have no idea how to do that
+        var jar = findValue(args, "-jar");
+        if (jar != null) {
+            var jarFile = new File(jar);
+            System.out.println("Launching in jar mode, using jar: " + jarFile.getAbsolutePath());
 
-        final var pathArg = findValue(args, "-p");
-        if (pathArg == null) {
-            System.err.println("Could not find module path (specified by -p)");
-            System.exit(1);
-            return;
+            var cp = readClasspathAttribute(jarFile);
+            cp.add(0, jarFile.toPath());
+
+            // Update the java.class.path sys prop with the jar and its Class-Path
+            var cpProperty = new StringBuilder(System.getProperty("java.class.path"));
+
+            var systemCl = ClassLoader.getSystemClassLoader();
+            for (Path path : cp) {
+                var absolute = path.toAbsolutePath().toString();
+                cpProperty.append(File.pathSeparatorChar).append(absolute);
+                appendClassPath.invoke(systemCl, absolute);
+            }
+
+            System.setProperty("java.class.path", cpProperty.toString());
         }
 
-        final var bootPath = installModulePath(getModulePath(pathArg));
+        // Otherwise, go back to trying to find the module path
+        else {
+            final var pathArg = findValue(args, "-p");
+            if (pathArg == null) {
+                System.err.println("Could not find module path (specified by -p)");
+                System.exit(1);
+                return;
+            }
 
-        findValues(args, "--add-opens").stream()
-                .map(arg -> arg.split("="))
-                .forEach(toOpen -> open(
-                        bootPath.layer().findModule(toOpen[0].split("/")[0]).orElseThrow(),
-                        toOpen[0].split("/")[1],
-                        bootPath.layer().findModule(toOpen[1]).orElseThrow()
-                ));
-        findValues(args, "--add-exports").stream()
-                .map(arg -> arg.split("="))
-                .forEach(toExport -> export(
-                        bootPath.layer().findModule(toExport[0].split("/")[0]).orElseThrow(),
-                        toExport[0].split("/")[1],
-                        (bootPath.layer().findModule(toExport[1]).orElseThrow())
-                ));
+            final var bootPath = installModulePath(getModulePath(pathArg));
 
-        SET_bootLayer.invokeExact(bootPath.layer());
+            // The add-opens/add-exports will only work with a module path anyway
+            findValues(args, "--add-opens").stream()
+                    .map(arg -> arg.split("="))
+                    .forEach(toOpen -> open(
+                            bootPath.layer().findModule(toOpen[0].split("/")[0]).orElseThrow(),
+                            toOpen[0].split("/")[1],
+                            bootPath.layer().findModule(toOpen[1]).orElseThrow()
+                    ));
+            findValues(args, "--add-exports").stream()
+                    .map(arg -> arg.split("="))
+                    .forEach(toExport -> export(
+                            bootPath.layer().findModule(toExport[0].split("/")[0]).orElseThrow(),
+                            toExport[0].split("/")[1],
+                            (bootPath.layer().findModule(toExport[1]).orElseThrow())
+                    ));
+
+            // The args file specifies "--add-modules ALL-MODULE-PATH" which is completely useless now, so we ignore it
+            findValue(args, "--add-modules");
+
+            // Update the boot path
+            SET_bootLayer.invokeExact(bootPath.layer());
+        }
 
         // Clear installed providers so the JiJ provider can be found
         {
@@ -125,16 +160,29 @@ public class Main {
             SET_installedProviders.invokeExact(newProviders);
         }
 
+        // Parse the system properties
         var sysProps = args.stream().filter(arg -> arg.startsWith("-D")).toList();
         sysProps.forEach(args::remove);
         sysProps.stream()
                 .map(arg -> arg.substring("-D".length()).split("=", 2))
                 .forEach(arg -> System.setProperty(arg[0], arg[1]));
 
-        // The args file specifies "--add-modules ALL-MODULE-PATH" which is completely useless now, so we ignore it
-        findValue(args, "--add-modules");
+        final String mainName;
 
-        final var mainName = args.remove(0);
+        // If we're starting a jar, the main class is specified in the manifest
+        if (jar != null) {
+            mainName = getMain(new File(jar));
+            if (mainName == null) {
+                System.err.println("Startup jar " + jar + " doesn't specify a Main-Class");
+                System.exit(1);
+                return;
+            }
+        }
+
+        // Otherwise it's the next argument
+        else {
+            mainName = args.remove(0);
+        }
 
         final Method main;
         try {
@@ -198,10 +246,7 @@ public class Main {
         if (installer != null) {
             System.err.println("Found installer " + installer.toAbsolutePath());
 
-            var installerJar = new JarFile(installer.toFile());
-            var manifest = installerJar.getManifest();
-            installerJar.close();
-            var mainName = manifest.getMainAttributes().getValue("Main-Class");
+            var mainName = getMain(installer.toFile());
             if (mainName == null) {
                 System.err.println("Installer file doesn't specify Main-Class");
                 return false;
@@ -222,6 +267,29 @@ public class Main {
         return false;
     }
 
+    @Nullable
+    private static String getMain(File file) throws IOException {
+        try (var jar = new JarFile(file)) {
+            var manifest = jar.getManifest();
+            return manifest.getMainAttributes().getValue(Attributes.Name.MAIN_CLASS);
+        }
+    }
+
+    private static List<Path> readClasspathAttribute(File file) throws IOException {
+        var paths = new ArrayList<Path>();
+        try (var jar = new JarFile(file)) {
+            var manifest = jar.getManifest();
+            var value = manifest.getMainAttributes().getValue(Attributes.Name.CLASS_PATH);
+            if (value != null) {
+                StringTokenizer st = new StringTokenizer(value);
+                while (st.hasMoreTokens()) {
+                    paths.add(Path.of(st.nextToken()));
+                }
+            }
+        }
+        return paths;
+    }
+
     private static List<String> findValues(List<String> args, String argument) {
         var lst = new ArrayList<String>();
         String val;
@@ -240,10 +308,11 @@ public class Main {
     }
 
     private static ModuleLayer.Controller installModulePath(Path[] path) throws Throwable {
+        final var systemCl = ClassLoader.getSystemClassLoader();
         final var finder = ModuleFinder.of(path);
         final var allModules = finder.findAll();
         for (ModuleReference module : allModules) {
-            LOAD_MODULE.invoke(ClassLoader.getSystemClassLoader(), module);
+            loadModule.invoke(systemCl, module);
         }
         return ModuleLayer.defineModules(
                 ModuleLayer.boot().configuration().resolve(
@@ -263,26 +332,46 @@ public class Main {
     }
 
     @Nullable
-    private static Path getArgsFile(Path runPath) {
-        var cmd = getCommand(runPath);
-        if (cmd == null) return null;
-        var command = toArgs(cmd);
+    private static List<String> getStartupArguments(Path runPath) throws IOException {
+        var command = getCommand(runPath);
+        if (command == null) return null;
+
+        var startupArgs = new ArrayList<>(command);
+        // Remove the java invocation
+        startupArgs.remove(0);
+
+        // Remove the special arguments used to pass the script args to the java invocation
+        startupArgs.remove(OS.passthroughArg);
+
         for (String part : command) {
-            if (part.startsWith("@") && part.endsWith("/" + OS.argsFile)) {
-                return Path.of(part.substring(1));
+            if (part.startsWith("@")) {
+                var idx = startupArgs.indexOf(part);
+                // Remove the file reference from the args
+                startupArgs.remove(idx);
+
+                // And add its contents instead
+                var itr = Files.readAllLines(Path.of(part.substring(1)))
+                        .stream().filter(str -> !str.startsWith("#")) // Ignore comments
+                        .flatMap(arg -> toArgs(arg).stream()).iterator();
+                while (itr.hasNext()) {
+                    startupArgs.add(idx++, itr.next());
+                }
             }
         }
-        System.err.println("Failed to find argument file in command " + command);
-        return null;
+
+        // Remove any -X arguments since we can't set them as the JVM is already initialised
+        startupArgs.removeIf(arg -> arg.startsWith("-X"));
+        return startupArgs;
     }
 
     @Nullable
-    private static String getCommand(Path path) {
+    private static List<String> getCommand(Path path) {
         try {
             final var contents = Files.readAllLines(path);
             for (String content : contents) {
-                if (content.isBlank() || OS.irrelevantCommand.test(content)) continue;
-                return content;
+                if (content.isBlank() || OS.comment.test(content)) continue;
+                var command = toArgs(content);
+                if (OS.relevantCommand.test(command)) return command;
             }
             System.err.println("Failed to find start command in file " + path);
             return null;
@@ -341,17 +430,21 @@ public class Main {
     }
 
     public enum OperatingSystem {
-        WINDOWS("run.bat", s -> s.startsWith("@") || s.startsWith("REM "), "win_args.txt"),
-        NIX("run.sh", s -> s.startsWith("#"), "unix_args.txt");
+        // On windows we're interested in the normal "java" invocation, or if explicit, in any invocation of the java exes
+        WINDOWS("run.bat", c -> c.startsWith("@") || c.startsWith("REM "), s -> s.get(0).equals("java") || s.get(0).endsWith("javaw.exe") || s.get(0).endsWith("java.exe"), "%*"),
+        NIX("run.sh", c -> c.startsWith("#"), s -> s.get(0).endsWith("java"), "$@");
 
         public final String runFile;
-        public final Predicate<String> irrelevantCommand;
-        public final String argsFile;
+        public final Predicate<String> comment;
+        public final Predicate<List<String>> relevantCommand;
+        public final String passthroughArg;
 
-        OperatingSystem(String runFile, Predicate<String> irrelevantCommand, String argsFile) {
+        OperatingSystem(String runFile, Predicate<String> comment, Predicate<List<String>> relevantCommand, String passthroughArg) {
             this.runFile = runFile;
-            this.irrelevantCommand = irrelevantCommand;
-            this.argsFile = argsFile;
+            this.comment = comment;
+            // But we're not interested in Forge's only-java check
+            this.relevantCommand = relevantCommand.and(Predicate.not(line -> line.contains("--onlyCheckJava")));
+            this.passthroughArg = passthroughArg;
         }
     }
 }
