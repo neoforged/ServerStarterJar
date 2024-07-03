@@ -29,16 +29,16 @@ import java.util.jar.JarFile;
 import java.util.stream.Collectors;
 
 public class Main {
-    public static final char ESCAPE = (char) 92; // \\
-    public static final char SPACE = ' ';
-    public static final char QUOTES = '"';
-    public static final char SINGLE_QUOTES = '\'';
-    public static final OperatingSystem OS = detectOs();
-    public static final MethodHandle loadModule;
-    public static final MethodHandle appendClassPath;
-    public static final MethodHandle SET_bootLayer;
-    public static final MethodHandle SET_installedProviders;
-    public static final MethodHandle loadInstalledProviders;
+    private static final char ESCAPE = (char) 92; // \\
+    private static final char SPACE = ' ';
+    private static final char QUOTES = '"';
+    private static final char SINGLE_QUOTES = '\'';
+    private static final OperatingSystem OS = System.getProperty("os.name").startsWith("Windows") ? OperatingSystem.WINDOWS : OperatingSystem.NIX;
+    private static final MethodHandle loadModule;
+    private static final MethodHandle appendClassPath;
+    private static final MethodHandle SET_bootLayer;
+    private static final MethodHandle SET_installedProviders;
+    private static final MethodHandle loadInstalledProviders;
 
     static {
         // Open the needed packages below to ourselves
@@ -381,7 +381,7 @@ public class Main {
         }
     }
 
-    public static List<String> toArgs(String str) {
+    private static List<String> toArgs(String str) {
         final List<String> args = new ArrayList<>();
         StringBuilder current = null;
         char enclosing = 0;
@@ -422,14 +422,7 @@ public class Main {
         return args;
     }
 
-    public static OperatingSystem detectOs() {
-        if (System.getProperty("os.name").startsWith("Windows")) {
-            return OperatingSystem.WINDOWS;
-        }
-        return OperatingSystem.NIX;
-    }
-
-    public enum OperatingSystem {
+    private enum OperatingSystem {
         // On windows we're interested in the normal "java" invocation, or if explicit, in any invocation of the java exes
         WINDOWS("run.bat", c -> c.startsWith("@") || c.startsWith("REM "), s -> s.get(0).equals("java") || s.get(0).endsWith("javaw.exe") || s.get(0).endsWith("java.exe"), "%*"),
         NIX("run.sh", c -> c.startsWith("#"), s -> s.get(0).endsWith("java"), "$@");

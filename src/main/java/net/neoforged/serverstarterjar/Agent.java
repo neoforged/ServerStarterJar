@@ -2,7 +2,7 @@ package net.neoforged.serverstarterjar;
 
 import java.lang.instrument.Instrumentation;
 
-public class Agent {
+class Agent {
     static Instrumentation instrumentation;
 
     // Used by -javaagent dev testing
