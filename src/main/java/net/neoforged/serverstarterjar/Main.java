@@ -7,8 +7,11 @@ import java.io.IOException;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
+import java.lang.module.FindException;
+import java.lang.module.InvalidModuleDescriptorException;
 import java.lang.module.ModuleFinder;
 import java.lang.module.ModuleReference;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URI;
 import java.net.URL;
@@ -26,6 +29,7 @@ import java.util.StringTokenizer;
 import java.util.function.Predicate;
 import java.util.jar.Attributes;
 import java.util.jar.JarFile;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 public class Main {
@@ -61,7 +65,38 @@ public class Main {
         }
     }
 
-    public static void main(String[] starterArgs) throws Throwable {
+    public static void main(String[] args) throws Throwable {
+        try {
+            mainLaunch(args);
+        } catch (FindException findEx) {
+            if (findEx.getCause() instanceof InvalidModuleDescriptorException err) {
+                throw handleInvalidJava(err);
+            }
+            throw findEx;
+        } catch (InvalidModuleDescriptorException error) {
+            // We catch Java version errors and rethrow them with a more friendly message
+            throw handleInvalidJava(error);
+        }
+    }
+
+    private static InvalidModuleDescriptorException handleInvalidJava(InvalidModuleDescriptorException error) {
+        if (error.getMessage() != null) {
+            var matcher = Pattern.compile("Unsupported major\\.minor version (?<version>\\d+)\\.\\d+").matcher(error.getMessage());
+            if (matcher.find()) {
+                int expected = Integer.parseInt(matcher.group(1));
+
+                // Java 8 is 52
+                var ex = new InvalidModuleDescriptorException("A minimum Java version of " + (8 + (expected - 52)) + " is required, but the current Java version is " + Main8.JAVA_VERSION);
+                ex.setStackTrace(new StackTraceElement[0]);
+                ex.addSuppressed(error);
+                return ex;
+            }
+        }
+
+        return error;
+    }
+
+    public static void mainLaunch(String[] starterArgs) throws Throwable {
         var startArgs = new ArrayList<>(Arrays.asList(starterArgs));
 
         URL installerUrl = null;
@@ -199,7 +234,12 @@ public class Main {
             export(main.getDeclaringClass().getModule(), main.getDeclaringClass().getPackageName(), Main.class.getModule());
         }
 
-        main.invoke(null, new Object[] { args.toArray(String[]::new) });
+        try {
+            main.invoke(null, new Object[] { args.toArray(String[]::new) });
+        } catch (InvocationTargetException exception) {
+            // The reflection will cause all exceptions to be wrapped in an InvocationTargetException
+            throw exception.getCause();
+        }
     }
 
     private static void export(Module module, String pkg, Module to) {

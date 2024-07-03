@@ -25,11 +25,16 @@ base {
     archivesName = 'server'
 }
 
+sourceSets {
+    java8
+}
+
 repositories {
     mavenCentral()
 }
 
 dependencies {
+    compileOnly sourceSets.java8.output
     compileOnly 'org.jetbrains:annotations:24.1.0'
 }
 
@@ -39,11 +44,18 @@ java {
     }
 }
 
+tasks.named("compileJava8Java").configure {
+    javaCompiler = javaToolchains.compilerFor {
+        languageVersion = JavaLanguageVersion.of(8)
+    }
+}
+
 jar {
+    from sourceSets.java8.output
     archiveFileName = 'server.jar'
     manifest.attributes([
             'Implementation-Version': project.version.toString(),
-            'Main-Class'            : 'net.neoforged.serverstarterjar.Main',
+            'Main-Class'            : 'net.neoforged.serverstarterjar.Main8',
             'Premain-Class'         : 'net.neoforged.serverstarterjar.Agent',
             'Launcher-Agent-Class'  : 'net.neoforged.serverstarterjar.Agent'
     ])
