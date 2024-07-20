@@ -22,6 +22,9 @@ You may specify an installer to download instead using the `--installer` option 
 The installer specified can either be a link to an installer (i.e. `https://maven.neoforged.net/releases/net/neoforged/neoforge/21.0.46-beta/neoforge-21.0.46-beta-installer.jar`)
 or a **NeoForge version** to download the installer for (i.e. `21.0.46-beta`).
 
+> [!NOTE]
+The installer will only be run if the starter cannot find the run scripts. You may force it to run if the installer version and the installed version differ using `--installer-force`.
+
 ## How it works
 Below you will find the steps the start goes through to launch a modular NeoForge environment:
 1. search the folder the starter was invoked in for the `run.sh` (*nix) / `run.bat` (Windows) file

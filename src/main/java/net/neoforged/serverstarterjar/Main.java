@@ -99,6 +99,7 @@ public class Main {
     public static void mainLaunch(String[] starterArgs) throws Throwable {
         var startArgs = new ArrayList<>(Arrays.asList(starterArgs));
 
+        boolean forceInstaller = false;
         URL installerUrl = null;
         if (startArgs.contains("--installer")) {
             var installer = startArgs.get(startArgs.indexOf("--installer") + 1);
@@ -111,6 +112,10 @@ public class Main {
                 installerUrl = URI.create("https://maven.neoforged.net/releases/net/neoforged/neoforge/" + installer + "/neoforge-" + installer + "-installer.jar").toURL();
             }
         }
+        if (startArgs.contains("--installer-force")) {
+            startArgs.remove("--installer-force");
+            forceInstaller = true;
+        }
 
         // Attempt to locate the run.bat/run.sh file
         final var runPath = Path.of(OS.runFile);
@@ -122,11 +127,35 @@ public class Main {
             }
         }
 
-        final var args = getStartupArguments(runPath);
-        if (args == null) {
+        final var script = parseScript(runPath);
+        if (script == null) {
             System.err.println("Failed to find startup arguments using run script path " + runPath);
             System.exit(1);
         }
+
+        if (forceInstaller) {
+            var argsFilePath = script.argFiles.stream()
+                    .filter(arg -> OS.argsFile.equals(arg.getFileName().toString()) && arg.getParent() != null)
+                    .findFirst().orElse(null);
+            if (argsFilePath != null) {
+                var actualVersion = argsFilePath.getParent().getFileName().toString();
+                var resolvedInstaller = resolveInstaller(installerUrl);
+                if (resolvedInstaller != null) {
+                    var installerVersion = getInstallerVersion(resolvedInstaller);
+                    if (installerVersion == null) {
+                        System.err.println("Failed to compute version of installer: " + resolvedInstaller);
+                    } else if (!installerVersion.equals(actualVersion)) {
+                        System.err.println("Installer version and actual version differ: " + installerVersion + " vs " + actualVersion);
+                        System.err.println("Running installer " + resolvedInstaller);
+                        if (!runInstaller(installerUrl)) {
+                            System.exit(1);
+                        }
+                    }
+                }
+            }
+        }
+
+        final var args = script.arguments;
 
         // If we're able to find a jar in the invocation, load that jar on the boot CP, and invoke it
         var jar = findValue(args, "-jar");
@@ -263,12 +292,19 @@ public class Main {
         );
     }
 
-    private static boolean runInstaller(@Nullable URL installerUrl) throws Throwable {
+    @Nullable
+    private static Path resolveInstaller(@Nullable URL installerUrl) throws Throwable {
         Path installer = null;
 
         if (installerUrl != null) {
             var onSlash = installerUrl.getPath().split("/");
             installer = Path.of(onSlash[onSlash.length - 1]);
+
+            // If the installer exists, it was already downloaded
+            if (Files.exists(installer)) {
+                return installer;
+            }
+
             System.err.println("Downloading installer from " + installerUrl + " to " + installer.toAbsolutePath());
             try (var stream = installerUrl.openStream()) {
                 Files.copy(stream, installer);
@@ -281,6 +317,11 @@ public class Main {
                 }
             }
         }
+        return installer;
+    }
+
+    private static boolean runInstaller(@Nullable URL installerUrl) throws Throwable {
+        final var installer = resolveInstaller(installerUrl);
 
         if (installer != null) {
             System.err.println("Found installer " + installer.toAbsolutePath());
@@ -304,6 +345,32 @@ public class Main {
         }
 
         return false;
+    }
+
+    @Nullable
+    private static String getInstallerVersion(Path installer) throws IOException {
+        try (var jar = new JarFile(installer.toFile())) {
+            var script = new String(jar.getInputStream(jar.getEntry("data/" + OS.runFile)).readAllBytes());
+            var byLine = script.split("(\r\n)|\n");
+            for (var line : byLine) {
+                if (line.isBlank() || OS.comment.test(line)) continue;
+                var args = toArgs(line);
+                if (OS.relevantCommand.test(args)) {
+                    // Find the arg file
+                    var version = args.stream().filter(str -> str.startsWith("@") && str.endsWith("/" + OS.argsFile))
+                            .map(str -> {
+                                // The version is the folder in which the arg file is contained
+                                var split = str.split("/");
+                                return split[split.length - 2];
+                            })
+                            .findFirst().orElse(null);
+                    if (version != null) {
+                        return version;
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     @Nullable
@@ -371,10 +438,11 @@ public class Main {
     }
 
     @Nullable
-    private static List<String> getStartupArguments(Path runPath) throws IOException {
+    private static Main.RunScript parseScript(Path runPath) throws IOException {
         var command = getCommand(runPath);
         if (command == null) return null;
 
+        var argFiles = new ArrayList<Path>();
         var startupArgs = new ArrayList<>(command);
         // Remove the java invocation
         startupArgs.remove(0);
@@ -388,8 +456,11 @@ public class Main {
                 // Remove the file reference from the args
                 startupArgs.remove(idx);
 
+                var argFile = Path.of(part.substring(1));
+                argFiles.add(argFile.toAbsolutePath());
+
                 // And add its contents instead
-                var itr = Files.readAllLines(Path.of(part.substring(1)))
+                var itr = Files.readAllLines(argFile)
                         .stream().filter(str -> !str.startsWith("#")) // Ignore comments
                         .flatMap(arg -> toArgs(arg).stream()).iterator();
                 while (itr.hasNext()) {
@@ -400,8 +471,10 @@ public class Main {
 
         // Remove any -X arguments since we can't set them as the JVM is already initialised
         startupArgs.removeIf(arg -> arg.startsWith("-X"));
-        return startupArgs;
+        return new RunScript(startupArgs, argFiles);
     }
+
+    private record RunScript(List<String> arguments, List<Path> argFiles) {}
 
     @Nullable
     private static List<String> getCommand(Path path) {
@@ -463,16 +536,18 @@ public class Main {
 
     private enum OperatingSystem {
         // On windows we're interested in the normal "java" invocation, or if explicit, in any invocation of the java exes
-        WINDOWS("run.bat", c -> c.startsWith("@") || c.startsWith("REM "), s -> s.get(0).equals("java") || s.get(0).endsWith("javaw.exe") || s.get(0).endsWith("java.exe"), "%*"),
-        NIX("run.sh", c -> c.startsWith("#"), s -> s.get(0).endsWith("java"), "$@");
+        WINDOWS("run.bat", "win_args.txt", c -> c.startsWith("@") || c.startsWith("REM "), s -> s.get(0).equals("java") || s.get(0).endsWith("javaw.exe") || s.get(0).endsWith("java.exe"), "%*"),
+        NIX("run.sh", "unix_args.txt", c -> c.startsWith("#"), s -> s.get(0).endsWith("java"), "$@");
 
         public final String runFile;
+        public final String argsFile;
         public final Predicate<String> comment;
         public final Predicate<List<String>> relevantCommand;
         public final String passthroughArg;
 
-        OperatingSystem(String runFile, Predicate<String> comment, Predicate<List<String>> relevantCommand, String passthroughArg) {
+        OperatingSystem(String runFile, String argsFile, Predicate<String> comment, Predicate<List<String>> relevantCommand, String passthroughArg) {
             this.runFile = runFile;
+            this.argsFile = argsFile;
             this.comment = comment;
             // But we're not interested in Forge's only-java check
             this.relevantCommand = relevantCommand.and(Predicate.not(line -> line.contains("--onlyCheckJava")));
