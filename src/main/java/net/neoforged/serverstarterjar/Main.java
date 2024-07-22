@@ -337,7 +337,16 @@ public class Main {
             var mainClass = classLoader.loadClass(mainName);
             System.err.println("Running installer...");
 
-            mainClass.getDeclaredMethod("main", String[].class).invoke(null, (Object) new String[] { "--installServer" });
+            var mainMethod = mainClass.getDeclaredMethod("main", String[].class);
+            SecurityAccess.wrapNoForceExit(() -> {
+                try {
+                    mainMethod.invoke(null, (Object) new String[] { "--installServer" });
+                } catch (InvocationTargetException invc) {
+                    // Make sure to ignore the security exception when force exits are attempted
+                    if (invc.getCause() instanceof SecurityException) return;
+                    throw invc;
+                }
+            });
 
             System.err.println("Installer finished");
             classLoader.close();
