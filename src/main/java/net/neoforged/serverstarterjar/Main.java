@@ -172,10 +172,15 @@ public class Main {
             var jarFile = new File(jar);
             System.out.println("Launching in jar mode, using jar: " + jarFile.getAbsolutePath());
 
-            var cp = readClasspathAttribute(jarFile);
+            var attrs = readJarAttributes(jarFile);
+            var cp = attrs.classpath;
             cp.add(0, jarFile.toPath());
 
             addToClassPath(cp);
+
+            if (attrs.premainClass != null) {
+                invokeAgentPremain(attrs.premainClass, "", jar);
+            }
         }
 
         // Otherwise, go back to trying to find the module or classpath
@@ -326,31 +331,35 @@ public class Main {
                     Agent.instrumentation.appendToSystemClassLoaderSearch(agentJar);
                 } catch (IOException e) {
                     System.err.println("Failed to open Java agent: " + agentPath);
-                    System.exit(1);
-                    return;
-                }
-
-                try {
-                    var premainClass = Class.forName(premainClassName, true, ClassLoader.getSystemClassLoader());
-                    try {
-                        premainClass.getMethod("premain", String.class, Instrumentation.class)
-                                .invoke(null, agentArgs, Agent.instrumentation);
-                    } catch (NoSuchMethodException ignored) {
-                        premainClass.getMethod("premain", String.class)
-                                .invoke(null, agentArgs);
-                    }
-                } catch (Exception e) {
-                    System.err.println("Failed to invoke agent premain of " + agentPath);
                     e.printStackTrace();
                     System.exit(1);
                     return;
                 }
+
+                invokeAgentPremain(premainClassName, agentArgs, agentPath);
             }
         }
     }
 
+    private static void invokeAgentPremain(String premainClassName, String agentArgs, String agentPath) {
+        try {
+            var premainClass = Class.forName(premainClassName, true, ClassLoader.getSystemClassLoader());
+            try {
+                premainClass.getMethod("premain", String.class, Instrumentation.class)
+                        .invoke(null, agentArgs, Agent.instrumentation);
+            } catch (NoSuchMethodException ignored) {
+                premainClass.getMethod("premain", String.class)
+                        .invoke(null, agentArgs);
+            }
+        } catch (Exception e) {
+            System.err.println("Failed to invoke agent premain in " + premainClassName + " of " + agentPath);
+            e.printStackTrace();
+            System.exit(1);
+        }
+    }
+
     private static void addToClassPath(List<Path> cp) throws Throwable {
-        // Update the java.class.path sys prop with the jar and its Class-Path
+        // Append the new class-path items to the java.class.path system property too
         var cpProperty = new StringBuilder(System.getProperty("java.class.path"));
 
         var systemCl = ClassLoader.getSystemClassLoader();
@@ -483,8 +492,9 @@ public class Main {
         }
     }
 
-    private static List<Path> readClasspathAttribute(File file) throws IOException {
+    private static JarAttributes readJarAttributes(File file) throws IOException {
         var paths = new ArrayList<Path>();
+        String premainClass;
         try (var jar = new JarFile(file)) {
             var manifest = jar.getManifest();
             var value = manifest.getMainAttributes().getValue(Attributes.Name.CLASS_PATH);
@@ -494,9 +504,12 @@ public class Main {
                     paths.add(Path.of(st.nextToken()));
                 }
             }
+            premainClass = manifest.getMainAttributes().getValue("Launcher-Agent-Class");
         }
-        return paths;
+        return new JarAttributes(paths, premainClass);
     }
+
+    record JarAttributes(List<Path> classpath, String premainClass) {}
 
     private static List<String> findValues(List<String> args, String argument) {
         var lst = new ArrayList<String>();
