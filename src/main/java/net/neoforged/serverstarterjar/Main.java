@@ -4,6 +4,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.instrument.Instrumentation;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
@@ -19,6 +20,7 @@ import java.net.URLClassLoader;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.nio.file.spi.FileSystemProvider;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -39,6 +41,8 @@ public class Main {
     private static final char SINGLE_QUOTES = '\'';
     private static final OperatingSystem OS = System.getProperty("os.name").startsWith("Windows") ? OperatingSystem.WINDOWS : OperatingSystem.NIX;
     private static final MethodHandle loadModule;
+    private static final MethodHandle addExportsToAllUnnamed;
+    private static final MethodHandle addOpensToAllUnnamed;
     private static final MethodHandle appendClassPath;
     private static final MethodHandle SET_bootLayer;
     private static final MethodHandle SET_installedProviders;
@@ -49,6 +53,7 @@ public class Main {
         open(ModuleLayer.boot().findModule("java.base").orElseThrow(), "java.lang", Main.class.getModule());
         open(ModuleLayer.boot().findModule("java.base").orElseThrow(), "jdk.internal.loader", Main.class.getModule());
         export(ModuleLayer.boot().findModule("java.base").orElseThrow(), "jdk.internal.loader", Main.class.getModule());
+        export(ModuleLayer.boot().findModule("java.base").orElseThrow(), "jdk.internal.module", Main.class.getModule());
         open(ModuleLayer.boot().findModule("java.base").orElseThrow(), "java.nio.file.spi", Main.class.getModule());
 
         var lookup = MethodHandles.lookup();
@@ -60,6 +65,10 @@ public class Main {
 
             SET_installedProviders = MethodHandles.privateLookupIn(FileSystemProvider.class, lookup).findStaticSetter(FileSystemProvider.class, "installedProviders", List.class);
             loadInstalledProviders = MethodHandles.privateLookupIn(FileSystemProvider.class, lookup).findStatic(FileSystemProvider.class, "loadInstalledProviders", MethodType.methodType(List.class));
+
+            var modulesCl = lookup.findClass("jdk.internal.module.Modules");
+            addExportsToAllUnnamed = lookup.findStatic(modulesCl, "addExportsToAllUnnamed", MethodType.methodType(void.class, Module.class, String.class));
+            addOpensToAllUnnamed = lookup.findStatic(modulesCl, "addOpensToAllUnnamed", MethodType.methodType(void.class, Module.class, String.class));
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -163,54 +172,79 @@ public class Main {
             var jarFile = new File(jar);
             System.out.println("Launching in jar mode, using jar: " + jarFile.getAbsolutePath());
 
-            var cp = readClasspathAttribute(jarFile);
+            var attrs = readJarAttributes(jarFile);
+            var cp = attrs.classpath;
             cp.add(0, jarFile.toPath());
 
-            // Update the java.class.path sys prop with the jar and its Class-Path
-            var cpProperty = new StringBuilder(System.getProperty("java.class.path"));
+            addToClassPath(cp);
 
-            var systemCl = ClassLoader.getSystemClassLoader();
-            for (Path path : cp) {
-                var absolute = path.toAbsolutePath().toString();
-                cpProperty.append(File.pathSeparatorChar).append(absolute);
-                appendClassPath.invoke(systemCl, absolute);
+            if (attrs.premainClass != null) {
+                invokeAgentPremain(attrs.premainClass, "", jar);
             }
-
-            System.setProperty("java.class.path", cpProperty.toString());
         }
 
-        // Otherwise, go back to trying to find the module path
+        // Otherwise, go back to trying to find the module or classpath
         else {
-            final var pathArg = findValue(args, "-p");
-            if (pathArg == null) {
-                System.err.println("Could not find module path (specified by -p)");
-                System.exit(1);
-                return;
+            loadJavaAgents(args);
+
+            final var modulePathArg = findValue(args, "-p", "--module-path");
+
+            ModuleLayer bootLayer;
+            if (modulePathArg != null) {
+                final var bootPath = installModulePath(getModulePath(modulePathArg));
+
+                // The args file specifies "--add-modules ALL-MODULE-PATH" which is completely useless now, so we ignore it
+                findValue(args, "--add-modules");
+
+                // Update the boot path
+                SET_bootLayer.invokeExact(bootPath.layer());
+
+                bootLayer = bootPath.layer();
+            } else {
+                bootLayer = ModuleLayer.boot();
             }
 
-            final var bootPath = installModulePath(getModulePath(pathArg));
-
-            // The add-opens/add-exports will only work with a module path anyway
             findValues(args, "--add-opens").stream()
                     .map(arg -> arg.split("="))
-                    .forEach(toOpen -> open(
-                            bootPath.layer().findModule(toOpen[0].split("/")[0]).orElseThrow(),
-                            toOpen[0].split("/")[1],
-                            bootPath.layer().findModule(toOpen[1]).orElseThrow()
-                    ));
+                    .forEach(toOpen -> {
+                        var fromModule = bootLayer.findModule(toOpen[0].split("/")[0]).orElseThrow();
+                        var pn = toOpen[0].split("/")[1];
+                        for (var moduleSpec : toOpen[1].split(",")) {
+                            if ("ALL-UNNAMED".equals(moduleSpec)) {
+                                try {
+                                    addOpensToAllUnnamed.invokeExact(fromModule, pn);
+                                } catch (Throwable e) {
+                                    throw new RuntimeException(e);
+                                }
+                            } else {
+                                bootLayer.findModule(moduleSpec).ifPresent(to -> open(fromModule, pn, to));
+                            }
+                        }
+                    });
             findValues(args, "--add-exports").stream()
                     .map(arg -> arg.split("="))
-                    .forEach(toExport -> export(
-                            bootPath.layer().findModule(toExport[0].split("/")[0]).orElseThrow(),
-                            toExport[0].split("/")[1],
-                            (bootPath.layer().findModule(toExport[1]).orElseThrow())
-                    ));
+                    .forEach(toExport -> {
+                        var fromModule = bootLayer.findModule(toExport[0].split("/")[0]).orElseThrow();
+                        var pn = toExport[0].split("/")[1];
+                        for (var moduleSpec : toExport[1].split(",")) {
+                            if ("ALL-UNNAMED".equals(moduleSpec)) {
+                                try {
+                                    addExportsToAllUnnamed.invokeExact(fromModule, pn);
+                                } catch (Throwable e) {
+                                    throw new RuntimeException(e);
+                                }
+                            } else {
+                                bootLayer.findModule(moduleSpec).ifPresent(to -> export(fromModule, pn, to));
+                            }
+                        }
+                    });
 
-            // The args file specifies "--add-modules ALL-MODULE-PATH" which is completely useless now, so we ignore it
-            findValue(args, "--add-modules");
-
-            // Update the boot path
-            SET_bootLayer.invokeExact(bootPath.layer());
+            final var classPathArg = findValue(args, "-cp", "--class-path", "-classpath");
+            if (classPathArg != null) {
+                String[] classPathItems = classPathArg.split(Pattern.quote(File.pathSeparator));
+                var classPathItemPaths = Arrays.stream(classPathItems).map(Paths::get).toList();
+                addToClassPath(classPathItemPaths);
+            }
         }
 
         // Clear installed providers so the JiJ provider can be found
@@ -268,6 +302,74 @@ public class Main {
             // The reflection will cause all exceptions to be wrapped in an InvocationTargetException
             throw exception.getCause();
         }
+    }
+
+    private static void loadJavaAgents(List<String> args) {
+        for (var it = args.iterator(); it.hasNext(); ) {
+            var item = it.next();
+
+            if (item.startsWith("-javaagent:")) {
+                it.remove();
+                var agentParts = item.substring("-javaagent:".length()).split("=", 2);
+                String agentArgs = "";
+                if (agentParts.length == 2) {
+                    agentArgs = agentParts[1];
+                }
+                var agentPath = agentParts[0];
+
+                // We fake this by appending it to the boot CP using our existing agent and invoking the main method directly
+                String premainClassName;
+                try {
+                    JarFile agentJar = new JarFile(agentPath);
+                    premainClassName = agentJar.getManifest().getMainAttributes().getValue("Premain-Class");
+                    if (premainClassName == null) {
+                        System.err.println("Java agent: " + agentPath + " has no Premain-Class attribute.");
+                        System.exit(1);
+                        return;
+                    }
+
+                    Agent.instrumentation.appendToSystemClassLoaderSearch(agentJar);
+                } catch (IOException e) {
+                    System.err.println("Failed to open Java agent: " + agentPath);
+                    e.printStackTrace();
+                    System.exit(1);
+                    return;
+                }
+
+                invokeAgentPremain(premainClassName, agentArgs, agentPath);
+            }
+        }
+    }
+
+    private static void invokeAgentPremain(String premainClassName, String agentArgs, String agentPath) {
+        try {
+            var premainClass = Class.forName(premainClassName, true, ClassLoader.getSystemClassLoader());
+            try {
+                premainClass.getMethod("premain", String.class, Instrumentation.class)
+                        .invoke(null, agentArgs, Agent.instrumentation);
+            } catch (NoSuchMethodException ignored) {
+                premainClass.getMethod("premain", String.class)
+                        .invoke(null, agentArgs);
+            }
+        } catch (Exception e) {
+            System.err.println("Failed to invoke agent premain in " + premainClassName + " of " + agentPath);
+            e.printStackTrace();
+            System.exit(1);
+        }
+    }
+
+    private static void addToClassPath(List<Path> cp) throws Throwable {
+        // Append the new class-path items to the java.class.path system property too
+        var cpProperty = new StringBuilder(System.getProperty("java.class.path"));
+
+        var systemCl = ClassLoader.getSystemClassLoader();
+        for (Path path : cp) {
+            var absolute = path.toAbsolutePath().toString();
+            cpProperty.append(File.pathSeparatorChar).append(absolute);
+            appendClassPath.invoke(systemCl, absolute);
+        }
+
+        System.setProperty("java.class.path", cpProperty.toString());
     }
 
     private static void export(Module module, String pkg, Module to) {
@@ -390,8 +492,9 @@ public class Main {
         }
     }
 
-    private static List<Path> readClasspathAttribute(File file) throws IOException {
+    private static JarAttributes readJarAttributes(File file) throws IOException {
         var paths = new ArrayList<Path>();
+        String premainClass;
         try (var jar = new JarFile(file)) {
             var manifest = jar.getManifest();
             var value = manifest.getMainAttributes().getValue(Attributes.Name.CLASS_PATH);
@@ -401,9 +504,12 @@ public class Main {
                     paths.add(Path.of(st.nextToken()));
                 }
             }
+            premainClass = manifest.getMainAttributes().getValue("Launcher-Agent-Class");
         }
-        return paths;
+        return new JarAttributes(paths, premainClass);
     }
+
+    record JarAttributes(List<Path> classpath, String premainClass) {}
 
     private static List<String> findValues(List<String> args, String argument) {
         var lst = new ArrayList<String>();
@@ -413,11 +519,13 @@ public class Main {
     }
 
     @Nullable
-    private static String findValue(List<String> args, String argument) {
-        int idx = args.indexOf(argument);
-        if (idx >= 0) {
-            args.remove(idx);
-            return args.remove(idx);
+    private static String findValue(List<String> args, String... argumentNames) {
+        for (String argument : argumentNames) {
+            int idx = args.indexOf(argument);
+            if (idx >= 0) {
+                args.remove(idx);
+                return args.remove(idx);
+            }
         }
         return null;
     }
