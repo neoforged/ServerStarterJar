@@ -24,12 +24,10 @@ import java.nio.file.Paths;
 import java.nio.file.spi.FileSystemProvider;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.StringTokenizer;
-import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.jar.Attributes;
 import java.util.jar.JarFile;
@@ -43,6 +41,8 @@ public class Main {
     private static final char SINGLE_QUOTES = '\'';
     private static final OperatingSystem OS = System.getProperty("os.name").startsWith("Windows") ? OperatingSystem.WINDOWS : OperatingSystem.NIX;
     private static final MethodHandle loadModule;
+    private static final MethodHandle addExportsToAllUnnamed;
+    private static final MethodHandle addOpensToAllUnnamed;
     private static final MethodHandle appendClassPath;
     private static final MethodHandle SET_bootLayer;
     private static final MethodHandle SET_installedProviders;
@@ -53,6 +53,7 @@ public class Main {
         open(ModuleLayer.boot().findModule("java.base").orElseThrow(), "java.lang", Main.class.getModule());
         open(ModuleLayer.boot().findModule("java.base").orElseThrow(), "jdk.internal.loader", Main.class.getModule());
         export(ModuleLayer.boot().findModule("java.base").orElseThrow(), "jdk.internal.loader", Main.class.getModule());
+        export(ModuleLayer.boot().findModule("java.base").orElseThrow(), "jdk.internal.module", Main.class.getModule());
         open(ModuleLayer.boot().findModule("java.base").orElseThrow(), "java.nio.file.spi", Main.class.getModule());
 
         var lookup = MethodHandles.lookup();
@@ -64,6 +65,10 @@ public class Main {
 
             SET_installedProviders = MethodHandles.privateLookupIn(FileSystemProvider.class, lookup).findStaticSetter(FileSystemProvider.class, "installedProviders", List.class);
             loadInstalledProviders = MethodHandles.privateLookupIn(FileSystemProvider.class, lookup).findStatic(FileSystemProvider.class, "loadInstalledProviders", MethodType.methodType(List.class));
+
+            var modulesCl = lookup.findClass("jdk.internal.module.Modules");
+            addExportsToAllUnnamed = lookup.findStatic(modulesCl, "addExportsToAllUnnamed", MethodType.methodType(void.class, Module.class, String.class));
+            addOpensToAllUnnamed = lookup.findStatic(modulesCl, "addOpensToAllUnnamed", MethodType.methodType(void.class, Module.class, String.class));
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -196,18 +201,38 @@ public class Main {
 
             findValues(args, "--add-opens").stream()
                     .map(arg -> arg.split("="))
-                    .forEach(toOpen -> forEachModule(bootLayer, toOpen[1], to -> open(
-                            bootLayer.findModule(toOpen[0].split("/")[0]).orElseThrow(),
-                            toOpen[0].split("/")[1],
-                            to
-                    )));
+                    .forEach(toOpen -> {
+                        var fromModule = bootLayer.findModule(toOpen[0].split("/")[0]).orElseThrow();
+                        var pn = toOpen[0].split("/")[1];
+                        for (var moduleSpec : toOpen[1].split(",")) {
+                            if ("ALL-UNNAMED".equals(moduleSpec)) {
+                                try {
+                                    addOpensToAllUnnamed.invokeExact(fromModule, pn);
+                                } catch (Throwable e) {
+                                    throw new RuntimeException(e);
+                                }
+                            } else {
+                                bootLayer.findModule(moduleSpec).ifPresent(to -> open(fromModule, pn, to));
+                            }
+                        }
+                    });
             findValues(args, "--add-exports").stream()
                     .map(arg -> arg.split("="))
-                    .forEach(toExport -> forEachModule(bootLayer, toExport[1], to -> export(
-                            bootLayer.findModule(toExport[0].split("/")[0]).orElseThrow(),
-                            toExport[0].split("/")[1],
-                            to
-                    )));
+                    .forEach(toExport -> {
+                        var fromModule = bootLayer.findModule(toExport[0].split("/")[0]).orElseThrow();
+                        var pn = toExport[0].split("/")[1];
+                        for (var moduleSpec : toExport[1].split(",")) {
+                            if ("ALL-UNNAMED".equals(moduleSpec)) {
+                                try {
+                                    addExportsToAllUnnamed.invokeExact(fromModule, pn);
+                                } catch (Throwable e) {
+                                    throw new RuntimeException(e);
+                                }
+                            } else {
+                                bootLayer.findModule(moduleSpec).ifPresent(to -> export(fromModule, pn, to));
+                            }
+                        }
+                    });
 
             final var classPathArg = findValue(args, "-cp", "--class-path", "-classpath");
             if (classPathArg != null) {
@@ -271,25 +296,6 @@ public class Main {
         } catch (InvocationTargetException exception) {
             // The reflection will cause all exceptions to be wrapped in an InvocationTargetException
             throw exception.getCause();
-        }
-    }
-
-    private static void forEachModule(ModuleLayer layer, String spec, Consumer<Module> consumer) {
-        for (var moduleSpec : spec.split(",")) {
-            if ("ALL-UNNAMED".equals(moduleSpec)) {
-                var unnamed = new HashSet<Module>();
-                for (Module module : layer.modules()) {
-                    if (module.getClassLoader() != null) {
-                        Module unnamedModule = module.getClassLoader().getUnnamedModule();
-                        if (unnamed.add(unnamedModule)) {
-                            consumer.accept(unnamedModule);
-                        }
-                    }
-                    consumer.accept(module);
-                }
-            } else {
-                layer.findModule(moduleSpec).ifPresent(consumer);
-            }
         }
     }
 
