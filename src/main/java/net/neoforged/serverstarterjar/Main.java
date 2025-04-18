@@ -586,8 +586,8 @@ public class Main {
             }
         }
 
-        // Remove any -X arguments since we can't set them as the JVM is already initialised
-        startupArgs.removeIf(arg -> arg.startsWith("-X"));
+        // Remove any -X or agent arguments since we can't set them as the JVM is already initialised
+        startupArgs.removeIf(arg -> arg.startsWith("-X") || arg.startsWith("-agentlib:"));
         return new RunScript(startupArgs, argFiles);
     }
 
