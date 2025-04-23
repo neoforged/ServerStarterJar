@@ -627,9 +627,7 @@ public class Main {
 
             if (!isEscaped) {
                 if (ch == enclosing) {
-                    args.add(current.toString());
                     enclosing = 0;
-                    current = null;
                     continue;
                 } else if ((ch == QUOTES || ch == SINGLE_QUOTES) && (current == null || current.toString().isBlank())) {
                     current = new StringBuilder();
@@ -638,7 +636,8 @@ public class Main {
                 }
             }
 
-            if (ch != ESCAPE) {
+            // We have to add backslashes (the escape character) so long as we aren't actually escaping a quote
+            if (ch != ESCAPE || (i < chars.length - 1 && chars[i + 1] != QUOTES && chars[i + 1] != SINGLE_QUOTES)) {
                 if (current == null) current = new StringBuilder();
                 current.append(ch);
             }
