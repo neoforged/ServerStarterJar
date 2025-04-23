@@ -1,4 +1,5 @@
 name: Test PRs
+run-name: Test ${{ matrix.version }}
 
 on:
   pull_request:
