@@ -6,6 +6,35 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 2
+      matrix:
+        version:
+          - 21.5.55-beta
+          - 21.1.161
+          - 20.6.133
+          - 20.4.246
+          - 20.2.93
+
+          - forge-1.21.5-55.0.7
+          - forge-1.21.1-52.1.1
+          - forge-1.20.1-47.4.0
+          - forge-1.19.2-43.5.0
+          - forge-1.18.2-40.3.10
+          - forge-1.17.1-37.1.1
     steps:
       - name: Checkout repository
         uses: neoforged/actions/checkout@main
+
+      - name: Setup JDK 21
+        uses: neoforged/actions/setup-java@main
+        with:
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+
+      - name: Test
+        run: ./gradlew productionTest --neo-version=${{ matrix.version }}
