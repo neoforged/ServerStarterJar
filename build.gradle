@@ -34,8 +34,16 @@ repositories {
 }
 
 dependencies {
-    compileOnly sourceSets.java8.output
+    implementation sourceSets.java8.output
     compileOnly 'org.jetbrains:annotations:24.1.0'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.8.1'
+    testImplementation 'org.assertj:assertj-core:3.27.2'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.8.1'
+}
+
+test {
+    useJUnitPlatform()
 }
 
 java {
@@ -86,8 +94,6 @@ publishMods {
         commitish = 'main'
     }
 }
-
-test.enabled = false
 
 tasks.register('productionTest', ProductionTest) {
     jar.set(tasks.jar.archiveFile)
