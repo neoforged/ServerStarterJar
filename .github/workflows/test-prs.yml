@@ -5,11 +5,10 @@ on:
 
 jobs:
   test:
-    name: Test ${{ matrix.version }}
-    runs-on: ubuntu-latest
     strategy:
       max-parallel: 2
       matrix:
+        os: [ubuntu, windows]
         version:
           - 21.5.55-beta
           - 21.1.161
@@ -23,6 +22,8 @@ jobs:
           - forge-1.19.2-43.5.0
           - forge-1.18.2-40.3.10
           - forge-1.17.1-37.1.1
+    name: Test ${{ matrix.version }} launch on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}-latest
     steps:
       - name: Checkout repository
         uses: neoforged/actions/checkout@main
