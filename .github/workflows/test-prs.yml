@@ -1,11 +1,11 @@
 name: Test PRs
-run-name: Test ${{ matrix.version }}
 
 on:
   pull_request:
 
 jobs:
   test:
+    name: Test ${{ matrix.version }}
     runs-on: ubuntu-latest
     strategy:
       max-parallel: 2
