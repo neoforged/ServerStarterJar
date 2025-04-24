@@ -34,8 +34,16 @@ repositories {
 }
 
 dependencies {
-    compileOnly sourceSets.java8.output
+    implementation sourceSets.java8.output
     compileOnly 'org.jetbrains:annotations:24.1.0'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.8.1'
+    testImplementation 'org.assertj:assertj-core:3.27.2'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.8.1'
+}
+
+test {
+    useJUnitPlatform()
 }
 
 java {
@@ -87,4 +95,46 @@ publishMods {
     }
 }
 
-test.enabled = false
+tasks.register('productionTest', ProductionTest) {
+    jar.set(tasks.jar.archiveFile)
+    directory = project.layout.dir(project.provider { new File(project.projectDir, 'testing') })
+}
+
+abstract class ProductionTest extends DefaultTask {
+    @InputFile
+    abstract RegularFileProperty getJar()
+
+    @Input
+    @Option(option = 'neo-version', description = 'The version to test')
+    abstract Property<String> getVersion()
+
+    @OutputDirectory
+    abstract DirectoryProperty getDirectory()
+
+    @TaskAction
+    void run() {
+        var dir = directory.get().asFile.toPath()
+
+        var version = getVersion().get()
+        String installerUrl
+        if (version.startsWith('forge-')) {
+            installerUrl = "https://maven.minecraftforge.net/net/minecraftforge/forge/${version.replace('forge-', '')}/${version}-installer.jar"
+        } else {
+            installerUrl = "https://maven.neoforged.net/releases/net/neoforged/neoforge/${version}/neoforge-${version}-installer.jar"
+        }
+
+        Files.write(dir.resolve('installer.jar'), URI.create(installerUrl).toURL().openStream().readAllBytes())
+
+        // TODO - accessing the project here is a bad idea
+        project.javaexec {
+            workingDir = dir.toFile()
+            classpath(dir.resolve('installer.jar').toFile())
+            args '--installServer'
+        }.assertNormalExitValue()
+
+        project.javaexec {
+            workingDir = dir.toFile()
+            classpath(jar)
+        }.assertNormalExitValue()
+    }
+}
