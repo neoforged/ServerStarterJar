@@ -24,6 +24,7 @@ import java.nio.file.Paths;
 import java.nio.file.spi.FileSystemProvider;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -596,7 +597,13 @@ public class Main {
             for (String content : contents) {
                 if (content.isBlank() || OS.comment.test(content)) continue;
                 var command = Utils.toArgs(content);
-                if (OS.relevantCommand.test(command)) return command;
+                
+                // Remove any invocations that "wrap" the command - e.g. exec, sudo, etc.
+                while (!command.isEmpty() && OS.commandWrappers.contains(command.get(0))) {
+                    command.remove(0);
+                }
+
+                if (!command.isEmpty() && OS.relevantCommand.test(command)) return command;
             }
             System.err.println("Failed to find start command in file " + path);
             return null;
@@ -609,21 +616,23 @@ public class Main {
     private enum OperatingSystem {
         // On windows we're interested in the normal "java" invocation, or if explicit, in any invocation of the java exes
         WINDOWS("run.bat", "win_args.txt", c -> c.startsWith("@") || c.startsWith("REM "), s -> s.get(0).equals("java") || s.get(0).endsWith("javaw.exe") || s.get(0).endsWith("java.exe"), "%*"),
-        NIX("run.sh", "unix_args.txt", c -> c.startsWith("#"), s -> s.get(0).endsWith("java"), "$@");
+        NIX("run.sh", "unix_args.txt", c -> c.startsWith("#"), s -> s.get(0).endsWith("java"), "$@", "exec", "eval", "sudo");
 
         public final String runFile;
         public final String argsFile;
         public final Predicate<String> comment;
         public final Predicate<List<String>> relevantCommand;
         public final String passthroughArg;
+        public final Set<String> commandWrappers;
 
-        OperatingSystem(String runFile, String argsFile, Predicate<String> comment, Predicate<List<String>> relevantCommand, String passthroughArg) {
+        OperatingSystem(String runFile, String argsFile, Predicate<String> comment, Predicate<List<String>> relevantCommand, String passthroughArg, String... commandWrappers) {
             this.runFile = runFile;
             this.argsFile = argsFile;
             this.comment = comment;
             // But we're not interested in Forge's only-java check
             this.relevantCommand = relevantCommand.and(Predicate.not(line -> line.contains("--onlyCheckJava")));
             this.passthroughArg = passthroughArg;
+            this.commandWrappers = new HashSet<>(Arrays.asList(commandWrappers));
         }
     }
 }
