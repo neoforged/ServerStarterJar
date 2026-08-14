@@ -133,7 +133,7 @@ public class Main {
             }
         }
 
-        final var script = parseScript(runPath);
+        var script = parseScript(runPath);
         if (script == null) {
             System.err.println("Failed to find startup arguments using run script path " + runPath);
             System.exit(1);
@@ -153,7 +153,16 @@ public class Main {
                     } else if (!installerVersion.equals(actualVersion)) {
                         System.err.println("Installer version and actual version differ: " + installerVersion + " vs " + actualVersion);
                         System.err.println("Running installer " + resolvedInstaller);
-                        if (!runInstaller(installerUrl)) {
+                        if (runInstaller(installerUrl)) {
+                            // Read the script again after installing a different version so that we don't launch the old version
+                            script = parseScript(runPath);
+                            if (script == null) {
+                                System.err.println("Failed to find startup arguments using run script path " + runPath);
+                                System.exit(1);
+                            }
+                            
+                            System.err.println("Launching newly installed version " + installerVersion + "...");
+                        } else {
                             System.exit(1);
                         }
                     }
